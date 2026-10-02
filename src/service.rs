@@ -1,12 +1,22 @@
+use serde::Deserialize;
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RestartPolicy {
+    #[default]
     Always,
     Never,
 }
 
+#[derive(Deserialize)]
 pub struct Service {
     name: String,
     command: String,
+
+    #[serde(default)]
     args: Vec<String>,
+
+    #[serde(default)]
     restart_policy: RestartPolicy,
 }
 

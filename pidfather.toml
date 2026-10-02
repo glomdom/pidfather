@@ -1,0 +1,8 @@
+[[services]]
+name = "test"
+command = "sh"
+args = ["-c", "exit 1"]
+
+[[services]]
+name = "always-fail"
+command = "idfkskibiditoiletistgifthisisacommand"
