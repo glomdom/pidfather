@@ -1,7 +1,9 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::Parser;
 use std::{
-    env, fs,
+    env,
+    ffi::{CStr, CString},
+    fs,
     process::{ExitCode, Stdio},
     time::Duration,
 };
@@ -32,17 +34,72 @@ const TERM_TIMEOUT: Duration = Duration::from_secs(10);
 #[command(version = "v0.0.0", about = "Homebrew supervisor for servers", long_about = None)]
 struct Cli {}
 
+fn read_usr(user: &str) -> anyhow::Result<(u32, u32, String)> {
+    let user_cstr = CString::new(user)?;
+
+    let mut buf_len = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
+        n if n > 0 => n as usize,
+
+        _ => 1024,
+    };
+
+    loop {
+        let mut buf: Vec<libc::c_char> = vec![0; buf_len];
+        let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+
+        let rc = unsafe {
+            libc::getpwnam_r(
+                user_cstr.as_ptr(),
+                &mut passwd,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut result,
+            )
+        };
+
+        if rc == libc::ERANGE && buf_len < (1 << 20) {
+            buf_len *= 2;
+
+            continue;
+        }
+
+        if rc != 0 {
+            bail!(
+                "getpwnam_r failed for `{}`: {}",
+                user,
+                std::io::Error::from_raw_os_error(rc)
+            );
+        }
+
+        if result.is_null() {
+            bail!("user `{}` does not exist", user);
+        }
+
+        let home = unsafe { CStr::from_ptr(passwd.pw_dir) }
+            .to_str()?
+            .to_owned();
+
+        return Ok((passwd.pw_uid, passwd.pw_gid, home));
+    }
+}
+
 async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()> {
-    let mut cmd = Command::new(service.command());
+    let (usr_uid, usr_gid, usr_pwd) = read_usr(&service.user)?;
+
+    let mut cmd = Command::new(&service.command);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    cmd.uid(usr_uid);
+    cmd.gid(usr_gid);
+    cmd.current_dir(usr_pwd);
     cmd.process_group(0);
-    cmd.args(service.args());
+    cmd.args(&service.args);
 
     let mut fails: u32 = 0;
 
     loop {
-        debug!("running {}", service.command());
+        debug!("running {}", service.command);
 
         let start = Instant::now();
         let outcome = match cmd.spawn() {
@@ -145,7 +202,7 @@ async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()>
 
         let delay = Duration::from_secs(2u64.pow(fails));
 
-        match service.policy() {
+        match service.restart_policy {
             RestartPolicy::Always => {
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {
@@ -179,7 +236,7 @@ async fn main() -> anyhow::Result<ExitCode> {
     if journal_stream {
         fmt()
             .with_target(false)
-            .without_time()
+            // .without_time()
             .with_max_level(Level::DEBUG)
             .init();
     } else {
@@ -199,11 +256,16 @@ async fn main() -> anyhow::Result<ExitCode> {
 
     let mut tasks = Vec::with_capacity(config.services.len());
     for service in config.services {
-        let service_span = info_span!("service", name = %service.name());
+        let service_span = info_span!("service", name = %service.name);
         let cancel_clone = cancel.clone();
 
         tasks.push(tokio::spawn(
-            async move { run(&service, cancel_clone).await }.instrument(service_span),
+            async move {
+                if let Err(e) = run(&service, cancel_clone).await {
+                    error!("service stopped: {:#}", e);
+                }
+            }
+            .instrument(service_span),
         ));
     }
 
@@ -221,9 +283,10 @@ async fn main() -> anyhow::Result<ExitCode> {
 
     cancel.cancel();
 
-    let mut results = Vec::with_capacity(tasks.len());
     for task in tasks {
-        results.push(task.await.unwrap());
+        if let Err(e) = task.await {
+            error!("service task panicked: {}", e);
+        }
     }
 
     Ok(ExitCode::SUCCESS)

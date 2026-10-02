@@ -10,30 +10,13 @@ pub enum RestartPolicy {
 
 #[derive(Deserialize)]
 pub struct Service {
-    name: String,
-    command: String,
+    pub name: String,
+    pub command: String,
 
     #[serde(default)]
-    args: Vec<String>,
+    pub args: Vec<String>,
 
     #[serde(default)]
-    restart_policy: RestartPolicy,
-}
-
-impl Service {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn args(&self) -> &[String] {
-        &self.args
-    }
-
-    pub fn command(&self) -> &str {
-        &self.command
-    }
-
-    pub fn policy(&self) -> &RestartPolicy {
-        &self.restart_policy
-    }
+    pub restart_policy: RestartPolicy,
+    pub user: String,
 }
