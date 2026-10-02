@@ -1,23 +1,26 @@
+use anyhow::Context;
+use clap::Parser;
 use std::{
     fs,
-    process::{ExitCode, ExitStatus, Stdio},
+    process::{ExitCode, Stdio},
     time::Duration,
 };
+
+use tokio::{
+    io::AsyncBufReadExt,
+    process::Command,
+    signal::{self, unix::SignalKind},
+    time::Instant,
+};
+
+use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, Level, debug, error, info, info_span, warn};
+use tracing_subscriber::fmt;
 
 use crate::{
     config::Config,
     service::{RestartPolicy, Service},
 };
-use anyhow::Context;
-use clap::Parser;
-use tokio::{
-    process::Command,
-    signal::{self, unix::SignalKind},
-    time::Instant,
-};
-use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, Level, debug, error, info, info_span, warn};
-use tracing_subscriber::fmt;
 
 mod config;
 mod service;
@@ -31,8 +34,8 @@ struct Cli {}
 
 async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()> {
     let mut cmd = Command::new(service.command());
-    cmd.stdout(Stdio::inherit());
-    cmd.stderr(Stdio::inherit());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
     cmd.process_group(0);
     cmd.args(service.args());
 
@@ -45,6 +48,31 @@ async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()>
 
         let outcome = match cmd.spawn() {
             Ok(mut child) => {
+                let child_stdout = child.stdout.take().unwrap();
+                let child_stderr = child.stderr.take().unwrap();
+
+                tokio::spawn(
+                    async move {
+                        let mut lines = tokio::io::BufReader::new(child_stdout).lines();
+
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            info!("{}", line);
+                        }
+                    }
+                    .in_current_span(),
+                );
+
+                tokio::spawn(
+                    async move {
+                        let mut lines = tokio::io::BufReader::new(child_stderr).lines();
+
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            warn!("{}", line);
+                        }
+                    }
+                    .in_current_span(),
+                );
+
                 tokio::select! {
                     r = child.wait() => {
                         r

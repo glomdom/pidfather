@@ -7,7 +7,12 @@ args = ["-c", "exit 1"]
 name = "always-fail"
 command = "idfkskibiditoiletistgifthisisacommand"
 
+# [[services]]
+# name = "trap-test"
+# command = "sh"
+# args = ["-c", "trap '' TERM; sleep 1000"]
+
 [[services]]
-name = "trap-test"
+name = "ticker"
 command = "sh"
-args = ["-c", "trap '' TERM; sleep 1000"]
+args = ["-c", "for i in 1 2 3; do echo tick $i; echo oops $i >&2; sleep 1; done; exit 1"]
