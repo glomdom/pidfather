@@ -8,4 +8,5 @@ user = "pc"
 name = "user-test"
 command = "sh"
 args = ["-c", "id; echo $HOME"]
+policy = "never"
 user = "pc"
