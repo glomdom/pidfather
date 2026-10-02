@@ -33,6 +33,7 @@ async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()>
     let mut cmd = Command::new(service.command());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
+    cmd.process_group(0);
     cmd.args(service.args());
 
     let mut fails: u32 = 0;
@@ -67,7 +68,7 @@ async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()>
                         let timeout = tokio::time::timeout(TERM_TIMEOUT, child.wait()).await;
                         match timeout {
                             Ok(_) => {
-                                info!("terminated proccess successfully");
+                                debug!("terminated proccess successfully");
                             },
 
                             Err(_) => {

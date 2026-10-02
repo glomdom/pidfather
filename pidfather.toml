@@ -6,3 +6,8 @@ args = ["-c", "exit 1"]
 [[services]]
 name = "always-fail"
 command = "idfkskibiditoiletistgifthisisacommand"
+
+[[services]]
+name = "trap-test"
+command = "sh"
+args = ["-c", "trap '' TERM; sleep 1000"]
