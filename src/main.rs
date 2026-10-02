@@ -1,112 +1,124 @@
 use std::{
-    process::{Command, ExitCode, Stdio},
-    thread,
-    time::{Duration, Instant},
-    vec,
+    process::{ExitCode, ExitStatus, Stdio},
+    time::Duration,
 };
 
+use crate::service::{RestartPolicy, Service};
 use clap::Parser;
+use tokio::{io, process::Command, time::Instant};
+use tracing::{Instrument, Level, debug, error, info, info_span, warn};
+use tracing_subscriber::fmt;
 
-#[allow(dead_code)]
-struct Service {
-    name: String,
-    command: String,
-    args: Vec<String>,
-    restart_policy: RestartPolicy,
-}
+mod service;
 
-impl Service {
-    pub fn new(
-        name: impl Into<String>,
-        command: impl Into<String>,
-        args: Vec<impl Into<String>>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            command: command.into(),
-            args: args.into_iter().map(Into::into).collect(),
-            restart_policy: RestartPolicy::Always,
-        }
-    }
-}
-
-#[allow(dead_code)]
-enum RestartPolicy {
-    Always,
-    Never,
-}
+const HEALTHY_AFTER: Duration = Duration::from_secs(10);
 
 #[derive(Parser, Debug)]
 #[command(version = "v0.0.0", about = "Homebrew supervisor for servers", long_about = None)]
 struct Cli {}
 
-fn run(service: &Service) -> anyhow::Result<()> {
-    let mut cmd = Command::new(&service.command);
+async fn attempt(cmd: &mut Command) -> io::Result<ExitStatus> {
+    let mut child = cmd.spawn()?;
+
+    child.wait().await
+}
+
+async fn run(service: &Service) -> anyhow::Result<()> {
+    let mut cmd = Command::new(service.command());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
-    cmd.args(&service.args);
+    cmd.args(service.args());
 
-    let mut fails = 0;
+    let mut fails: u32 = 0;
 
     loop {
-        println!("running {:?}", cmd);
+        debug!("running {}", service.command());
 
         let start = Instant::now();
-        let mut res = cmd.spawn()?;
-        res.wait()?;
-
+        let outcome = attempt(&mut cmd).await;
         let elapsed = start.elapsed();
-        let delay = Duration::from_secs(1 * 2u64.pow(fails));
 
-        if elapsed >= delay {
-            fails = 0;
+        match outcome {
+            Ok(status) if elapsed >= HEALTHY_AFTER => {
+                fails = 0;
 
-            println!(
-                "service `{}` lasted longer than {}s, marking as healthy",
-                service.name,
-                delay.as_secs()
-            );
-        } else {
-            fails = (fails + 1).min(5);
+                info!(
+                    "exited ({}) after {}s, marking as healthy",
+                    status,
+                    elapsed.as_secs()
+                );
+            }
 
-            println!(
-                "service `{}` failed to last longer than {}s, increasing restart delay",
-                service.name,
-                delay.as_secs()
-            );
+            Ok(status) => {
+                fails = (fails + 1).min(5);
+
+                warn!(
+                    "exited ({}) before {}s, increasing restart delay",
+                    status,
+                    HEALTHY_AFTER.as_secs()
+                );
+            }
+
+            Err(e) => {
+                fails = (fails + 1).min(5);
+
+                error!("failed to start: {}, increasing restart delay", e);
+            }
         }
 
-        match service.restart_policy {
+        let delay = Duration::from_secs(2u64.pow(fails));
+
+        match service.policy() {
             RestartPolicy::Always => {
-                thread::sleep(delay);
+                tokio::time::sleep(delay).await;
 
                 continue;
             }
 
-            RestartPolicy::Never => break,
+            RestartPolicy::Never => {
+                break;
+            }
         }
     }
 
     Ok(())
 }
 
-fn main() -> anyhow::Result<ExitCode> {
+#[tokio::main]
+async fn main() -> anyhow::Result<ExitCode> {
+    let fmt = fmt()
+        .with_target(false)
+        .with_max_level(Level::DEBUG)
+        .finish();
+
+    tracing::subscriber::set_global_default(fmt)?;
+
     let _cli = Cli::parse();
 
-    // let service = Service::new(
-    //     "test",
-    //     "sh",
-    //     vec![
-    //         "-c",
-    //         "for i in 1 2 3; do echo tick $i; echo oops $i >&2; sleep 1; done; exit 1",
-    //     ],
-    // );
+    let service1 = Service::new("test", "sh", vec!["-c", "exit 1"]);
+    let service2 = Service::new(
+        "always-fail",
+        "idfkskibiditoiletistgifthisisacommand",
+        vec!["-c", "exit 1"],
+    );
 
-    let service = Service::new("test", "sh", vec!["-c", "exit 1"]);
+    let services = vec![service1, service2];
 
-    let services = vec![service];
+    info!("starting {} services", services.len());
 
-    run(&services[0])?;
+    let mut tasks = Vec::with_capacity(services.len());
+    for service in services {
+        let service_span = info_span!("service", name = %service.name());
+
+        tasks.push(tokio::spawn(
+            async move { run(&service).await }.instrument(service_span),
+        ));
+    }
+
+    let mut results = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        results.push(task.await.unwrap());
+    }
 
     Ok(ExitCode::SUCCESS)
 }
