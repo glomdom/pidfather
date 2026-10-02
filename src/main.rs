@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use std::{
-    fs,
+    env, fs,
     process::{ExitCode, Stdio},
     time::Duration,
 };
@@ -45,7 +45,6 @@ async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()>
         debug!("running {}", service.command());
 
         let start = Instant::now();
-
         let outcome = match cmd.spawn() {
             Ok(mut child) => {
                 let child_stdout = child.stdout.take().unwrap();
@@ -172,12 +171,20 @@ async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()>
 
 #[tokio::main]
 async fn main() -> anyhow::Result<ExitCode> {
-    let fmt = fmt()
-        .with_target(false)
-        .with_max_level(Level::DEBUG)
-        .finish();
+    let journal_stream = match env::var("JOURNAL_STREAM") {
+        Ok(_) => true,
+        Err(_) => false,
+    };
 
-    tracing::subscriber::set_global_default(fmt)?;
+    if journal_stream {
+        fmt()
+            .with_target(false)
+            .without_time()
+            .with_max_level(Level::DEBUG)
+            .init();
+    } else {
+        fmt().with_target(false).with_max_level(Level::DEBUG).init();
+    }
 
     let _cli = Cli::parse();
 
