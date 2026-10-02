@@ -2,11 +2,11 @@
 name = "ticker"
 command = "sh"
 args = ["-c", "for i in 1 2 3; do echo tick $i; echo oops $i >&2; sleep 1; done; exit 1"]
-user = "pc"
+user = "glomdom"
 
 [[services]]
 name = "user-test"
 command = "sh"
 args = ["-c", "id; echo $HOME"]
-policy = "never"
-user = "pc"
+restart_policy = "never"
+user = "glomdom"

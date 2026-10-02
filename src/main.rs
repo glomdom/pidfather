@@ -90,9 +90,12 @@ async fn run(service: &Service, cancel: CancellationToken) -> anyhow::Result<()>
     let mut cmd = Command::new(&service.command);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+
     cmd.uid(usr_uid);
     cmd.gid(usr_gid);
+    cmd.env("HOME", &usr_pwd);
     cmd.current_dir(usr_pwd);
+
     cmd.process_group(0);
     cmd.args(&service.args);
 
